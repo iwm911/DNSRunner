@@ -5,14 +5,12 @@ import uuid
 from netaddr.ip import IPNetwork
 import sys
 
-
 DNS_SERVER = ['8.8.8.8']
-DOMAIN = 'ibm.com'
 
 class DNSRunner():
     #todo:add the mx records
     #todo:add ipv6 support
-    def __init__(self,domainName,dnsServers=DNS_SERVER,tcp=False,soaBrute=False,findNeighbor=False):
+    def __init__(self,domainName,dnsServers=None,tcp=False,soaBrute=False,findNeighbor=False):
         #the actual domain name to scan
         self._domainName = domainName.strip()
         self._tcp = tcp
@@ -26,11 +24,9 @@ class DNSRunner():
         self._domainsList = [self._domainName]
         self._resolver = dns.resolver.Resolver()
         #DNS server to use for resolving
-        self._resolver.nameservers = []
-        for i in dnsServers:
-            self._resolver.nameservers.append(i.strip())
-        if not len(self._resolver.nameservers):
-            exit()
+        if dnsServers:
+            for i in dnsServers:
+                self._resolver.nameservers.append(i.strip())
         self._soaList = []
         #list of possible subdomains
         self._subDomainsList = []
@@ -58,6 +54,7 @@ class DNSRunner():
         self._getNSServers()
         self._tryZoneTransffer()
         self._checkWildCard()
+        self._getOthers()
         if self._soaBrute:
             self._bruteForceSubDomainSOA()
         self._bruteForceSubDomains()
@@ -86,10 +83,13 @@ class DNSRunner():
                 names.sort()
                 for n in names:
                     print zone[n].to_text(n)
-                #todo:save to file
+                fd = open('%s.txt' % self._domainName,'a')
+                for n in names:
+                    fd.write(zone[n].to_text(n))
+                fd.close()
                 exit(0)
             except dns.exception.FormError, e:
-                print('Cant Transfer the zone')
+                print('Cant Transfer the zone from: %s' % server)
 
     def _checkWildCard(self):
         try:
@@ -98,6 +98,15 @@ class DNSRunner():
                 self._wildCard = str(host)
         except dns.resolver.NXDOMAIN,e:
             print('No Wild Card')
+
+    def _getOthers(self):
+        #todo: get mx records
+        #todo: get DC records
+        #todo: get domain name
+        #todo: get sip records
+        #todo: get lync records
+        #todo: extract SOA from NS servers and MX server
+        pass
 
     def _getSOA(self,preFix):
         try:
@@ -122,11 +131,14 @@ class DNSRunner():
             return None
 
     def _bruteForceSubDomains(self):
+        domainsCounter = 0
         for domain in self._domainsList:
+            domainsCounter += 1
             counter = 0
+            print('\rStaring to work on %s (%s/%s)' % (domain,domainsCounter,len(self._domainsList)))
             for subdomain in self._subDomainsList:
                 counter += 1
-                sys.stdout.write('\r%s/%s\r' % (counter,len(self._subDomainsList)))
+                sys.stdout.write('\rTrying %s.%s (%s/%s)\r' % (subdomain,self._domainName,counter,len(self._subDomainsList)))
                 sys.stdout.flush()
                 try:
                     answer = self._resolver.query('%s.%s' % (subdomain,domain), 'A',tcp=self._tcp)
@@ -144,22 +156,21 @@ class DNSRunner():
                 except dns.resolver.NXDOMAIN,e:
                     pass
                 except dns.resolver.NoAnswer, e:
-                    print('\rERROR: NoAnswer on %s.%s' % (subdomain,domain))
+                    pass
                 except dns.exception.Timeout,e:
                     print('ERROR: DNS Server Timeout, Sleeping for 10sec')
-                    print('ERROR: Check domain %s.%s manualy' % (subdomain,domain))
+                    print('ERROR: Check domain %s.%s manually' % (subdomain,domain))
                     sleep(10)
 
     def _bruteForceSubDomainSOA(self):
         counter = 0
         for line in self._soaList:
             counter += 1
-            sys.stdout.write('\r%s/%s' % (counter,len(self._soaList)))
             if self._getSOA(line):
-                self._domainsList.append(line)
-                print('\rFound Possible SOA: %s' % line)
+                self._domainsList.append('%s.%s' % (line,self._domainName))
+                print('\rFound Possible SOA: %s.%s' % (line,self._domainName))
             else:
-                print('\rNo SOA on %s' % line)
+                sys.stdout.write('\rNo SOA on %s (%s/%s)' % (line,counter,len(self._soaList)))
 
     def _extractSubnets(self):
         for foundDomain in self._foundDomains.iterkeys():
@@ -231,14 +242,21 @@ class DNSRunner():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(conflict_handler='resolve',description='This is a DNSRunner Beta')
-    parser.add_argument('-d',action='store',dest='domainName')
-    parser.add_argument('-a',action='store_true',dest='soaBrute')
-    parser.add_argument('-n',action='store_true',dest='findNeighbor')
-    parser.add_argument('-s',action='store',dest='dnsServer')
-    parser.add_argument('-f',action='store',default='hosts.txt',dest='hostsFile')
-    parser.add_argument('-t',action='store_true',dest='tcp')
+    parser.add_argument('-d','--dns',action='store',dest='domainName',help='The Domain to run')
+    parser.add_argument('-s',action='store',dest='dnsServer',help='DNS Servers (separate with \',\')')
+    parser.add_argument('-a',action='store_true',dest='soaBrute',help='Try to find sub domains')
+    parser.add_argument('-n',action='store_true',dest='findNeighbor',help='run ptr on neighbor ip ranges')
+    parser.add_argument('-t',action='store_true',dest='tcp',help='use TCP instead of UDP')
 
-    myArgs =  parser.parse_args(['-d google.com','-s 8.8.8.8,8.8.4.4'])
+    myArgs =  parser.parse_args()
 
-    runner = DNSRunner(myArgs.domainName,dnsServers=myArgs.dnsServer.split(','))
+    dnsServers = myArgs.dnsServer
+    if dnsServers:
+        dnsServers = dnsServers.split(',')
+    soaBrute = myArgs.soaBrute
+    domainName = myArgs.domainName
+    findNeighbor = myArgs.findNeighbor
+    tcp = myArgs.tcp
+
+    runner = DNSRunner(domainName=domainName,dnsServers=dnsServers,tcp=tcp,soaBrute=soaBrute,findNeighbor=findNeighbor)
     runner.run()
